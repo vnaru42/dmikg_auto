@@ -17,7 +17,9 @@ ENABLED_KEY = "DMIKG_AUTO/enabled"
 STYLE_FOLDER = r"F:\GDL\Software\QGIS_komplet_stytem\layer_styles"
 
 # Fælles QGIS skabelon sti
-TEMPLATE_SOURCE = r"F:\GDL\Software\QGIS_komplet_stytem\TEMPLATE_PROJECT\SKABELONV2.qgz"
+TEMPLATE_SOURCE = (
+    r"F:\GDL\Software\QGIS_komplet_stytem\TEMPLATE_PROJECT\SKABELONV2.qgz"
+)
 
 class DmikgAuto:
 
@@ -139,7 +141,7 @@ class DmikgAuto:
             )
 
     def sync_template(self):
-        # Stop hvis fællesdrevets template ikke findes
+        # Stop hvis fællesdrevets skabelon ikke findes
         if not os.path.exists(TEMPLATE_SOURCE):
             QgsMessageLog.logMessage(
                 f"Skabelon ikke fundet: {TEMPLATE_SOURCE}",
@@ -147,48 +149,53 @@ class DmikgAuto:
                 level=Qgis.Warning
             )
             return
-    
+
         # Find brugerens aktive QGIS-profil
         profile_path = QgsApplication.qgisSettingsDirPath()
-    
+        
+        if Qgis.QGIS_VERSION_INT >= 40000:
+            profile_path = profile_path.replace(
+                "QGIS3",
+                "QGIS4"
+            )
+
+        # Lokal mappe til projektskabeloner
         template_folder = os.path.join(
             profile_path,
             "project_templates"
         )
-    
-        # Opret template-mappen hvis den mangler
+
         os.makedirs(
             template_folder,
             exist_ok=True
         )
-    
+
+        # Lokal projektskabelon
         local_template = os.path.join(
             template_folder,
             "SKABELONV2.qgz"
         )
-    
-        # Kopier kun hvis lokal fil mangler
-        # eller fællesdrevets version er nyere
+
+        # Kopier skabelonen hvis den mangler lokalt,
+        # eller hvis fællesversionen er nyere
         should_copy = (
             not os.path.exists(local_template)
             or os.path.getmtime(TEMPLATE_SOURCE)
             > os.path.getmtime(local_template)
         )
-    
-        if not should_copy:
-            return
-    
-        shutil.copy2(
-            TEMPLATE_SOURCE,
-            local_template
-        )
-    
-        QgsMessageLog.logMessage(
-            f"SKABELONV2 opdateret: {local_template}",
-            "DMIKG Auto",
-            level=Qgis.Info
-        )
 
+        if should_copy:
+            shutil.copy2(
+                TEMPLATE_SOURCE,
+                local_template
+            )
+
+            QgsMessageLog.logMessage(
+                f"SKABELONV2 opdateret: {local_template}",
+                "DMIKG Auto",
+                level=Qgis.Info
+            )
+        
     def unload(self):
         # Fjern signaler igen når pluginet unloades
         QgsProject.instance().layersAdded.disconnect(self.layers_added)
