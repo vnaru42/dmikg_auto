@@ -1,10 +1,14 @@
 import os
+import shutil
+import tempfile
 
 from qgis.core import QgsProject
 from qgis.PyQt.QtCore import QSettings, Qt
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHeaderView,
@@ -12,6 +16,9 @@ from qgis.PyQt.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QSizePolicy,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -26,6 +33,7 @@ from .config import (
     ENABLED_KEY,
     ROOT_FOLDER_KEY,
     SETTINGS_KEY,
+    SHARED_STYLE_OVERRIDES,
     get_root_folder,
     get_style_folder,
 )
@@ -49,12 +57,12 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         # ------------------------------------------------------------
         # Fælles DMIKG-mappe
         # ------------------------------------------------------------
-        folder_group = QGroupBox("Fælles DMIKG-mappe")
+        folder_group = QGroupBox("DMIKG Fælles style mappe")
         folder_layout = QVBoxLayout(folder_group)
 
         folder_info = QLabel(
-            "Herfra findes både layer_styles og TEMPLATE_PROJECT. "
-            "Skift denne mappe hvis fx F:\\GDL bliver til F:\\GRF."
+            "Sti til overordnet fælles style mappe (...\QGIS_komplet_stytem). "
+            
         )
         folder_info.setWordWrap(True)
         folder_layout.addWidget(folder_info)
@@ -83,6 +91,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         layout.addWidget(self.enabled_checkbox)
 
         self.table = QTableWidget()
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels([
             "Lagnavn",
@@ -99,7 +108,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         self.table.cellDoubleClicked.connect(self.choose_style_file)
         self.table.itemSelectionChanged.connect(self.update_buttons)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
 
         button_layout = QHBoxLayout()
         self.add_button = QPushButton("Tilføj")
@@ -139,12 +148,11 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.developer_info.setWordWrap(True)
         developer_layout.addWidget(self.developer_info)
 
-        self.save_all_styles_button = QPushButton("Gem alle lagstyles")
-        self.save_all_styles_button.clicked.connect(self.save_all_styles)
+        self.save_all_styles_button = QPushButton("Gem lagstyles...")
+        self.save_all_styles_button.clicked.connect(self.save_selected_styles)
         developer_layout.addWidget(self.save_all_styles_button)
 
         layout.addWidget(developer_group)
-        layout.addStretch()
 
         self.setLayout(layout)
 
@@ -192,12 +200,13 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         settings = QSettings()
         custom_rules = settings.value(SETTINGS_KEY, [], type=list)
         standard_styles = self.get_standard_styles()
+        standard_styles.update(SHARED_STYLE_OVERRIDES)
 
         self.table.setRowCount(0)
 
         for layer_name, standard_path in sorted(standard_styles.items()):
             style_path = standard_path
-            status = "Standard"
+            status = "Fælles" if layer_name in SHARED_STYLE_OVERRIDES else "Standard"
 
             for rule in custom_rules:
                 if rule.get("layer", "") == layer_name:
@@ -228,7 +237,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-        if status in ("Standard", "Tilpasset"):
+        if status in ("Standard", "Tilpasset", "Fælles"):
             layer_item.setFlags(layer_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
         self.table.setItem(row, 0, layer_item)
@@ -259,7 +268,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         self.table.setItem(row, 1, QTableWidgetItem(file_path))
 
-        if current_status in ("Standard", "Tilpasset"):
+        if current_status in ("Standard", "Tilpasset", "Fælles"):
             status_item.setText("Tilpasset")
         else:
             status_item.setText("Brugerregel")
@@ -327,101 +336,182 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.developer_info.setVisible(enabled)
         self.save_all_styles_button.setVisible(enabled)
 
-    def save_all_styles(self):
+    def save_selected_styles(self):
+        """Lad udvikleren vælge projektlag før der skrives til fællesmappen."""
         style_folder = self.current_style_folder()
-
         if not os.path.isdir(style_folder):
             QMessageBox.warning(
-                self,
-                "DMIKG Auto",
+                self, "DMIKG Auto",
                 f"Style-mappen blev ikke fundet:\n{style_folder}",
             )
             return
 
+        layers = sorted(
+            (layer for layer in QgsProject.instance().mapLayers().values()
+             if layer.isValid()),
+            key=lambda layer: layer.name().casefold(),
+        )
+        if not layers:
+            QMessageBox.information(self, "DMIKG Auto", "Projektet har ingen gyldige lag.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Gem lagstyles")
+        dialog.resize(560, 500)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            "Vælg de lag, hvis aktuelle QGIS-style skal gemmes i den fælles "
+            "layer_styles-mappe. Ingen lag er valgt på forhånd."
+        ))
+        layer_list = QListWidget(dialog)
+        layer_list.setAlternatingRowColors(True)
+        for layer in layers:
+            item = QListWidgetItem(layer.name())
+            item.setData(Qt.ItemDataRole.UserRole, layer.id())
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            layer_list.addItem(item)
+        layout.addWidget(layer_list)
+
+        controls = QHBoxLayout()
+        select_all = QPushButton("Vælg alle", dialog)
+        deselect_all = QPushButton("Fravælg alle", dialog)
+        select_all.clicked.connect(lambda: self.set_layer_checks(
+            layer_list, Qt.CheckState.Checked
+        ))
+        deselect_all.clicked.connect(lambda: self.set_layer_checks(
+            layer_list, Qt.CheckState.Unchecked
+        ))
+        controls.addWidget(select_all)
+        controls.addWidget(deselect_all)
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        save_button.setText("Gem valgte")
+        save_button.setEnabled(False)
+        layer_list.itemChanged.connect(lambda _item: save_button.setEnabled(
+            any(layer_list.item(i).checkState() == Qt.CheckState.Checked
+                for i in range(layer_list.count()))
+        ))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = [
+            QgsProject.instance().mapLayer(layer_list.item(i).data(Qt.ItemDataRole.UserRole))
+            for i in range(layer_list.count())
+            if layer_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        selected = [layer for layer in selected if layer is not None]
+        if not selected:
+            return
+
+        # To lag med samme navn ville skrive til samme standardfil.
+        names = [layer.name().casefold() for layer in selected]
+        duplicates = sorted({layer.name() for layer in selected
+                             if names.count(layer.name().casefold()) > 1})
+        if duplicates:
+            QMessageBox.warning(
+                self, "Samme lagnavn flere gange",
+                "Flere valgte lag har samme navn og ville overskrive samme QML. "
+                "Vælg kun ét lag pr. navn:\n" + "\n".join(duplicates),
+            )
+            return
+
         code, ok = QInputDialog.getText(
-            self,
-            "Bekræft udviklerhandling",
+            self, "Bekræft udviklerhandling",
             "Indtast udviklerkoden for at fortsætte:",
             QLineEdit.EchoMode.Password,
         )
-
         if not ok:
             return
-
         if code != DEVELOPER_CODE:
             QMessageBox.warning(
-                self,
-                "Forkert kode",
-                "Udviklerkoden er forkert. Ingen styles blev gemt.",
+                self, "Forkert kode", "Udviklerkoden er forkert. Ingen styles blev gemt."
             )
             return
 
-        # Kun lag med en eksisterende standard-QML gemmes.
-        # Det forhindrer fx baggrundskort/WMS i pludselig at oprette nye QML-filer.
-        candidates = []
-        skipped = []
-
-        for layer in QgsProject.instance().mapLayers().values():
-            qml_path = os.path.join(style_folder, f"{layer.name()}.qml")
-
-            if os.path.isfile(qml_path):
-                candidates.append((layer, qml_path))
-            else:
-                skipped.append(layer.name())
-
-        if not candidates:
-            QMessageBox.information(
-                self,
-                "DMIKG Auto",
-                "Ingen projektlag matcher eksisterende QML-filer i style-mappen.",
-            )
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "Overskriv fælles lagstyles?",
-            (
-                f"Du er ved at overskrive {len(candidates)} fælles QML-fil(er) "
-                "med de styles, der er aktive i projektet lige nu.\n\n"
-                "Vil du fortsætte?"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        saved = []
-        failed = []
-
-        for layer, qml_path in candidates:
-            try:
-                message, success = layer.saveNamedStyle(qml_path)
-            except Exception as exc:
-                failed.append(f"{layer.name()}: {exc}")
+        saved, failed, skipped = [], [], []
+        for layer in selected:
+            name = layer.name()
+            # Undgå at et fejlagtigt navn kan føre til skrivning uden for fællesmappen.
+            if not name or name in (".", "..") or any(c in name for c in '<>:"/\\|?*'):
+                failed.append(f"{name}: Lagnavnet kan ikke bruges som filnavn.")
                 continue
+            standard_path = os.path.join(style_folder, f"{name}.qml")
+            external_path = SHARED_STYLE_OVERRIDES.get(name)
+            exists = os.path.isfile(standard_path)
 
-            if success:
-                saved.append(layer.name())
+            if exists and external_path:
+                question = (
+                    "Du er ved at overskrive standard-QML-filen i den fælles "
+                    "template-mappe med lagets aktuelle style.\n\n"
+                    f"Standardfil, der overskrives:\n{standard_path}\n\n"
+                    f"Aktiv fælles override (style-kilde):\n{external_path}\n\n"
+                    "Den eksterne override-fil bliver ikke ændret. "
+                    "Er du sikker på, at du vil overskrive standardfilen?"
+                )
+            elif exists:
+                question = (
+                    f"Overskriv standard-QML-filen?\n\n{standard_path}\n\n"
+                    "Den erstattes med lagets aktuelle style i QGIS."
+                )
             else:
-                failed.append(f"{layer.name()}: {message}")
+                question = None  # Nye QML-filer kan oprettes uden overskrivning.
+            if question is not None:
+                reply = QMessageBox.question(
+                    self, "Bekræft overskrivning af fælles style", question,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    skipped.append(name)
+                    continue
 
-        summary = [f"Gemte styles: {len(saved)}"]
-        summary.append(f"Sprunget over: {len(skipped)}")
-        summary.append(f"Fejl: {len(failed)}")
+            # Gem først til midlertidig fil i samme mappe. Flyt derefter på plads,
+            # så en fejl under saveNamedStyle ikke ødelægger den eksisterende QML.
+            temp_path = None
+            try:
+                fd, temp_path = tempfile.mkstemp(
+                    prefix=".dmikg_style_", suffix=".qml", dir=style_folder
+                )
+                os.close(fd)
+                message, success = layer.saveNamedStyle(temp_path)
+                if not success:
+                    raise RuntimeError(message)
+                if exists:
+                    shutil.copy2(standard_path, standard_path + ".bak")
+                os.replace(temp_path, standard_path)
+                temp_path = None
+                saved.append(name)
+            except Exception as exc:
+                failed.append(f"{name}: {exc}")
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
 
+        summary = [
+            f"Gemte styles: {len(saved)}",
+            f"Fravalgt ved bekræftelse: {len(skipped)}",
+            f"Fejl: {len(failed)}",
+        ]
         if failed:
             summary.append("\nFejl:\n" + "\n".join(failed[:10]))
-
-        QMessageBox.information(
-            self,
-            "DMIKG Auto - færdig",
-            "\n".join(summary),
-        )
-
-        # Genindlæs tabellen så den afspejler style-mappen.
+        QMessageBox.information(self, "DMIKG Auto – gemning færdig", "\n".join(summary))
         self.load_settings()
+
+    @staticmethod
+    def set_layer_checks(layer_list, state):
+        for index in range(layer_list.count()):
+            layer_list.item(index).setCheckState(state)
 
     def apply(self):
         rules = []
@@ -438,7 +528,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             status = status_item.text()
             style_path = style_item.text().strip() if style_item else ""
 
-            if status == "Standard":
+            if status in ("Standard", "Fælles"):
                 continue
 
             if not layer_name or not style_path:

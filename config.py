@@ -14,6 +14,15 @@ DEFAULT_ROOT_FOLDER = r"F:\GDL\Software\QGIS_komplet_stytem"
 # Det er ikke tænkt som egentlig adgangssikring.
 DEVELOPER_CODE = "DMIKG"
 
+# Fælles undtagelser: samme filsti bruges af alle medarbejdere.
+# Lokale brugerregler kan fortsat overstyre disse.
+SHARED_STYLE_OVERRIDES = {
+    "V_ALLE_NIV_OBS": (
+        r"F:\GDL\Data\GEO\BC\Niv_Opgaver\QGIS_Skabelon"
+        r"\ALLE_NIV_OBS_opmålingsår.qml"
+    ),
+}
+
 
 def get_root_folder():
     return QSettings().value(

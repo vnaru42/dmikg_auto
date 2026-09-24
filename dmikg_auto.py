@@ -10,6 +10,7 @@ from .options import DmikgAutoOptionsFactory
 from .config import (
     ENABLED_KEY,
     SETTINGS_KEY,
+    SHARED_STYLE_OVERRIDES,
     get_style_folder,
     get_template_source,
 )
@@ -302,7 +303,31 @@ class DmikgAuto:
 
                     return
 
-        # 2. Hvis ingen override findes:
+        # 2. Fælles filsti for særlige lag (efter eventuel lokal override).
+        shared_style_path = SHARED_STYLE_OVERRIDES.get(layer_name)
+        if shared_style_path:
+            if os.path.isfile(shared_style_path):
+                message, success = layer.loadNamedStyle(shared_style_path)
+                if success:
+                    layer.triggerRepaint()
+                    QgsMessageLog.logMessage(
+                        f"Fælles style anvendt på {layer_name}: {shared_style_path}",
+                        "DMIKG Auto", level=Qgis.Info,
+                    )
+                    return
+                QgsMessageLog.logMessage(
+                    f"Kunne ikke indlæse fælles style på {layer_name}: {message}. "
+                    "Forsøger standard-QML.",
+                    "DMIKG Auto", level=Qgis.Warning,
+                )
+            else:
+                QgsMessageLog.logMessage(
+                    f"Fælles style mangler for {layer_name}: {shared_style_path}. "
+                    "Forsøger standard-QML.",
+                    "DMIKG Auto", level=Qgis.Warning,
+                )
+
+        # 3. Hvis ingen override findes:
         # prøv standard style fra fællesmappen
         style_path = os.path.join(
             get_style_folder(),
